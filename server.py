@@ -9,25 +9,47 @@ from urllib.request import Request, urlopen
 from mcp.server import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, PlainTextResponse
 
+
+# ====================================================
+# GENEL AYARLAR
+# ====================================================
 
 API_BASE = os.getenv(
     "EHLIYETSINAVI_API_BASE",
     "https://www.ehliyetsinavi.se/wp-json/eh-chatgpt/v1",
 ).rstrip("/")
 
+SERVER_VERSION = "1.0.2"
+
+# OpenAI geliştirici panelinde verilen doğrulama tokenı
+OPENAI_VERIFICATION_TOKEN = (
+    "P-eCBI80FasLeaJKy_fuVmNXFJz9-Puvkr35S33WkII"
+)
+
+
+# ====================================================
+# MCP SUNUCUSU
+# ====================================================
 
 mcp = MCPServer(
     "İsveç Ehliyet Sınavı Türkçe",
-    version="1.0.1",
+    version=SERVER_VERSION,
     instructions=(
-        "Bu salt-okunur araçları İsveç B sınıfı ehliyet teorisi hakkında Türkçe sorular için kullan. "
-        "Araçların döndürdüğü ehliyetsinavi.se içeriklerini tercih et ve kullanıcı Türkçe soruyorsa Türkçe yanıtla. "
-        "Trafikverket, Transportstyrelsen veya başka bir resmi İsveç kurumuymuş gibi davranma. "
-        "Uygun olduğunda kaynak sayfanın URL'sini koru ki kullanıcı orijinal içeriği açabilsin. "
+        "Bu salt-okunur araçları İsveç B sınıfı "
+        "ehliyet teorisi hakkında Türkçe sorular "
+        "için kullan. "
+        "Araçların döndürdüğü ehliyetsinavi.se "
+        "içeriklerini tercih et. "
+        "Kullanıcı Türkçe soruyorsa Türkçe yanıtla. "
+        "Trafikverket, Transportstyrelsen veya "
+        "başka bir resmi İsveç kurumuymuş gibi davranma. "
+        "Uygun olduğunda kaynak sayfanın URL'sini koru. "
         "Yalnızca herkese açık eğitim içeriklerini kullan. "
-        "Ücretli üyelik paketlerini veya fiyatlarını listeleme, satın alma ya da abonelik yükseltme işlemi yapma."
+        "Ücretli üyelik paketlerini veya fiyatlarını "
+        "listeleme, satın alma ya da abonelik "
+        "yükseltme işlemi yapma."
     ),
 )
 
@@ -39,10 +61,15 @@ READ_ONLY = ToolAnnotations(
 )
 
 
+# ====================================================
+# WORDPRESS API BAĞLANTISI
+# ====================================================
+
 def _get_json(
     path: str,
     params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+
     url = f"{API_BASE}/{path.lstrip('/')}"
 
     if params:
@@ -53,7 +80,7 @@ def _get_json(
         headers={
             "Accept": "application/json",
             "User-Agent": (
-                "EhliyetSinaviMCP/1.0.1 "
+                "EhliyetSinaviMCP/1.0.2 "
                 "(+https://www.ehliyetsinavi.se/)"
             ),
         },
@@ -104,9 +131,10 @@ def _get_json(
     description=(
         "ehliyetsinavi.se üzerindeki herkese açık "
         "Türkçe İsveç ehliyet teorisi rehberlerinde "
-        "arama yapar. Trafik kuralları, sağ kuralı, "
-        "geçiş önceliği, trafik işaretleri, Risk 1/Risk 2, "
-        "teoriprov ve uppkörning konuları için kullan."
+        "arama yapar. "
+        "Trafik kuralları, sağ kuralı, geçiş önceliği, "
+        "trafik işaretleri, Risk 1/Risk 2, teoriprov "
+        "ve uppkörning konuları için kullan."
     ),
     annotations=READ_ONLY,
 )
@@ -114,7 +142,7 @@ def search_theory(
     query: str,
     limit: int = 5,
 ) -> dict[str, Any]:
-    """Türkçe İsveç ehliyet teorisi bilgi tabanında arama yap."""
+    """Türkçe İsveç ehliyet teorisi rehberlerinde ara."""
 
     query = query.strip()
 
@@ -158,7 +186,7 @@ def search_theory(
 def get_theory_page(
     content_id: int,
 ) -> dict[str, Any]:
-    """Bir herkese açık Türkçe teori sayfasını WordPress içerik ID'siyle getir."""
+    """Herkese açık Türkçe teori sayfasını getir."""
 
     if content_id <= 0:
         return {
@@ -168,7 +196,9 @@ def get_theory_page(
             ),
         }
 
-    data = _get_json(f"content/{content_id}")
+    data = _get_json(
+        f"content/{content_id}"
+    )
 
     return {
         "ok": True,
@@ -191,7 +221,7 @@ def get_theory_page(
     annotations=READ_ONLY,
 )
 def get_free_theory_test() -> dict[str, Any]:
-    """Ücretsiz Türkçe İsveç ehliyet teori testi bağlantısını döndür."""
+    """Ücretsiz Türkçe teori testi bağlantısını getir."""
 
     data = _get_json("status")
 
@@ -200,6 +230,9 @@ def get_free_theory_test() -> dict[str, Any]:
         if isinstance(data, dict)
         else {}
     )
+
+    if not isinstance(links, dict):
+        links = {}
 
     return {
         "ok": True,
@@ -221,16 +254,43 @@ def get_free_theory_test() -> dict[str, Any]:
 
 
 # ====================================================
+# OPENAI DOMAIN VERIFICATION
+# ====================================================
+
+@mcp.custom_route(
+    "/.well-known/openai-apps-challenge",
+    methods=["GET"],
+)
+async def openai_domain_verification(_request):
+    """
+    OpenAI eklenti geliştirici panelinin
+    alan adı sahipliği doğrulaması için kullanılır.
+    """
+
+    return PlainTextResponse(
+        content=OPENAI_VERIFICATION_TOKEN,
+        status_code=200,
+        media_type="text/plain",
+    )
+
+
+# ====================================================
 # SUNUCU SAĞLIK KONTROLÜ
 # ====================================================
 
-@mcp.custom_route("/health", methods=["GET"])
+@mcp.custom_route(
+    "/health",
+    methods=["GET"],
+)
 async def health(_request):
+
     return JSONResponse(
         {
             "status": "ok",
-            "service": "İsveç Ehliyet Sınavı Türkçe MCP",
-            "version": "1.0.1",
+            "service": (
+                "İsveç Ehliyet Sınavı Türkçe MCP"
+            ),
+            "version": SERVER_VERSION,
             "api_base": API_BASE,
         }
     )
@@ -241,12 +301,14 @@ async def health(_request):
 # ====================================================
 
 def _transport_security() -> TransportSecuritySettings:
+
     raw_hosts = os.getenv(
         "MCP_ALLOWED_HOSTS",
         "",
     ).strip()
 
     if raw_hosts:
+
         hosts = [
             h.strip()
             for h in raw_hosts.split(",")
@@ -269,6 +331,7 @@ def _transport_security() -> TransportSecuritySettings:
 # ====================================================
 
 if __name__ == "__main__":
+
     port = int(
         os.getenv("PORT", "8000")
     )
