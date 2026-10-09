@@ -21,9 +21,10 @@ API_BASE = os.getenv(
     "https://www.ehliyetsinavi.se/wp-json/eh-chatgpt/v1",
 ).rstrip("/")
 
-SERVER_VERSION = "1.0.2"
+SERVER_VERSION = "1.0.3"
 
-# OpenAI geliştirici panelinde verilen doğrulama tokenı
+# OpenAI geliştirici panelindeki mevcut alan adı doğrulama tokenı.
+# Panel yeni token üretirse bu değeri değiştirin.
 OPENAI_VERIFICATION_TOKEN = (
     "P-eCBI80FasLeaJKy_fuVmNXFJz9-Puvkr35S33WkII"
 )
@@ -37,27 +38,27 @@ mcp = MCPServer(
     "İsveç Ehliyet Sınavı Türkçe",
     version=SERVER_VERSION,
     instructions=(
-        "Bu salt-okunur araçları İsveç B sınıfı "
-        "ehliyet teorisi hakkında Türkçe sorular "
-        "için kullan. "
-        "Araçların döndürdüğü ehliyetsinavi.se "
-        "içeriklerini tercih et. "
-        "Kullanıcı Türkçe soruyorsa Türkçe yanıtla. "
-        "Trafikverket, Transportstyrelsen veya "
-        "başka bir resmi İsveç kurumuymuş gibi davranma. "
-        "Uygun olduğunda kaynak sayfanın URL'sini koru. "
-        "Yalnızca herkese açık eğitim içeriklerini kullan. "
-        "Ücretli üyelik paketlerini veya fiyatlarını "
-        "listeleme, satın alma ya da abonelik "
+        "Bu salt-okunur araçları İsveç B sınıfı ehliyet teorisi hakkında "
+        "Türkçe sorular için kullan. Araçların döndürdüğü ehliyetsinavi.se "
+        "içeriklerini tercih et ve kullanıcı Türkçe soruyorsa Türkçe yanıtla. "
+        "Trafikverket, Transportstyrelsen veya başka bir resmî İsveç kurumuymuş "
+        "gibi davranma. Uygun olduğunda kaynak sayfanın URL'sini paylaş. "
+        "Yalnızca herkese açık eğitim içeriklerini kullan. Ücretli üyelik "
+        "paketlerini veya fiyatlarını listeleme; satın alma ya da abonelik "
         "yükseltme işlemi yapma."
     ),
 )
 
 
+# ====================================================
+# MCP ARAÇ GÜVENLİK TANIMLARI
+# ====================================================
+
 READ_ONLY = ToolAnnotations(
     read_only_hint=True,
+    destructive_hint=False,
+    open_world_hint=True,
     idempotent_hint=True,
-    open_world_hint=False,
 )
 
 
@@ -80,7 +81,7 @@ def _get_json(
         headers={
             "Accept": "application/json",
             "User-Agent": (
-                "EhliyetSinaviMCP/1.0.2 "
+                f"EhliyetSinaviMCP/{SERVER_VERSION} "
                 "(+https://www.ehliyetsinavi.se/)"
             ),
         },
@@ -89,35 +90,36 @@ def _get_json(
     try:
         with urlopen(req, timeout=15) as response:
             payload = response.read().decode("utf-8")
-            return json.loads(payload)
+
+        data = json.loads(payload)
+
+        if not isinstance(data, dict):
+            return {
+                "ok": False,
+                "error": "API yanıtı beklenen JSON nesnesi biçiminde değil.",
+                "source": url,
+            }
+
+        return data
 
     except HTTPError as exc:
         return {
             "ok": False,
-            "error": (
-                f"EhliyetSinavi API HTTP "
-                f"{exc.code} döndürdü."
-            ),
+            "error": f"EhliyetSinavi API HTTP {exc.code} döndürdü.",
             "source": url,
         }
 
     except URLError as exc:
         return {
             "ok": False,
-            "error": (
-                "EhliyetSinavi API'ye ulaşılamadı: "
-                f"{exc.reason}"
-            ),
+            "error": f"EhliyetSinavi API'ye ulaşılamadı: {exc.reason}",
             "source": url,
         }
 
-    except (TimeoutError, json.JSONDecodeError) as exc:
+    except (TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         return {
             "ok": False,
-            "error": (
-                "Geçerli API yanıtı okunamadı: "
-                f"{exc}"
-            ),
+            "error": f"Geçerli API yanıtı okunamadı: {exc}",
             "source": url,
         }
 
@@ -129,20 +131,15 @@ def _get_json(
 @mcp.tool(
     title="Türkçe İsveç ehliyet teorisinde ara",
     description=(
-        "ehliyetsinavi.se üzerindeki herkese açık "
-        "Türkçe İsveç ehliyet teorisi rehberlerinde "
-        "arama yapar. "
-        "Trafik kuralları, sağ kuralı, geçiş önceliği, "
-        "trafik işaretleri, Risk 1/Risk 2, teoriprov "
-        "ve uppkörning konuları için kullan."
+        "ehliyetsinavi.se üzerindeki herkese açık Türkçe İsveç ehliyet teorisi "
+        "rehberlerinde arama yapar. Trafik kuralları, sağ kuralı, geçiş "
+        "önceliği, trafik işaretleri, Risk 1/Risk 2, teoriprov ve uppkörning "
+        "konuları için kullan. Yalnızca dış kaynaktan okuma yapar."
     ),
     annotations=READ_ONLY,
 )
-def search_theory(
-    query: str,
-    limit: int = 5,
-) -> dict[str, Any]:
-    """Türkçe İsveç ehliyet teorisi rehberlerinde ara."""
+def search_theory(query: str, limit: int = 5) -> dict[str, Any]:
+    """Herkese açık Türkçe İsveç ehliyet teorisi rehberlerinde ara."""
 
     query = query.strip()
 
@@ -163,7 +160,6 @@ def search_theory(
     )
 
     return {
-        "ok": True,
         "source": "EhliyetSinavi.se",
         **data,
     }
@@ -176,32 +172,24 @@ def search_theory(
 @mcp.tool(
     title="Türkçe teori rehberini oku",
     description=(
-        "search_theory aracının döndürdüğü sayısal "
-        "içerik ID'sini kullanarak ehliyetsinavi.se "
-        "üzerindeki herkese açık teori rehberinin "
-        "tam metnini okur."
+        "search_theory aracının döndürdüğü sayısal içerik ID'siyle "
+        "ehliyetsinavi.se üzerindeki herkese açık teori rehberinin metnini "
+        "okur. Hesap veya ücretli içerik erişimi sağlamaz."
     ),
     annotations=READ_ONLY,
 )
-def get_theory_page(
-    content_id: int,
-) -> dict[str, Any]:
-    """Herkese açık Türkçe teori sayfasını getir."""
+def get_theory_page(content_id: int) -> dict[str, Any]:
+    """Herkese açık Türkçe teori rehberini WordPress içerik ID'siyle getir."""
 
     if content_id <= 0:
         return {
             "ok": False,
-            "error": (
-                "content_id sıfırdan büyük olmalıdır"
-            ),
+            "error": "content_id sıfırdan büyük olmalıdır",
         }
 
-    data = _get_json(
-        f"content/{content_id}"
-    )
+    data = _get_json(f"content/{content_id}")
 
     return {
-        "ok": True,
         "source": "EhliyetSinavi.se",
         **data,
     }
@@ -214,22 +202,17 @@ def get_theory_page(
 @mcp.tool(
     title="Ücretsiz Türkçe teori testini getir",
     description=(
-        "ehliyetsinavi.se üzerindeki güncel ücretsiz "
-        "Türkçe İsveç ehliyet teori testi bağlantısını "
-        "döndürür."
+        "ehliyetsinavi.se üzerindeki ücretsiz Türkçe İsveç ehliyet teori "
+        "testinin herkese açık bağlantısını döndürür. Satın alma işlemi yapmaz."
     ),
     annotations=READ_ONLY,
 )
 def get_free_theory_test() -> dict[str, Any]:
-    """Ücretsiz Türkçe teori testi bağlantısını getir."""
+    """Ücretsiz Türkçe ehliyet teori testi bağlantısını getir."""
 
     data = _get_json("status")
 
-    links = (
-        data.get("links", {})
-        if isinstance(data, dict)
-        else {}
-    )
+    links = data.get("links", {})
 
     if not isinstance(links, dict):
         links = {}
@@ -237,14 +220,10 @@ def get_free_theory_test() -> dict[str, Any]:
     return {
         "ok": True,
         "provider": "EhliyetSinavi.se",
-        "title": (
-            "İsveç Ehliyeti Ücretsiz Türkçe "
-            "Teori Sınavı"
-        ),
+        "title": "İsveç Ehliyeti Ücretsiz Türkçe Teori Sınavı",
         "url": links.get(
             "free_test",
-            "https://www.ehliyetsinavi.se/"
-            "isvec-ehliyeti-ucretsiz-teori-sinavi/",
+            "https://www.ehliyetsinavi.se/isvec-ehliyeti-ucretsiz-teori-sinavi/",
         ),
         "home": links.get(
             "home",
@@ -254,7 +233,7 @@ def get_free_theory_test() -> dict[str, Any]:
 
 
 # ====================================================
-# OPENAI DOMAIN VERIFICATION
+# OPENAI ALAN ADI DOĞRULAMASI
 # ====================================================
 
 @mcp.custom_route(
@@ -262,15 +241,11 @@ def get_free_theory_test() -> dict[str, Any]:
     methods=["GET"],
 )
 async def openai_domain_verification(_request):
-    """
-    OpenAI eklenti geliştirici panelinin
-    alan adı sahipliği doğrulaması için kullanılır.
-    """
+    """OpenAI alan adı doğrulama isteğine düz metin olarak yanıt ver."""
 
     return PlainTextResponse(
         content=OPENAI_VERIFICATION_TOKEN,
         status_code=200,
-        media_type="text/plain",
     )
 
 
@@ -278,22 +253,15 @@ async def openai_domain_verification(_request):
 # SUNUCU SAĞLIK KONTROLÜ
 # ====================================================
 
-@mcp.custom_route(
-    "/health",
-    methods=["GET"],
-)
+@mcp.custom_route("/health", methods=["GET"])
 async def health(_request):
 
-    return JSONResponse(
-        {
-            "status": "ok",
-            "service": (
-                "İsveç Ehliyet Sınavı Türkçe MCP"
-            ),
-            "version": SERVER_VERSION,
-            "api_base": API_BASE,
-        }
-    )
+    return JSONResponse({
+        "status": "ok",
+        "service": "İsveç Ehliyet Sınavı Türkçe MCP",
+        "version": SERVER_VERSION,
+        "api_base": API_BASE,
+    })
 
 
 # ====================================================
@@ -308,7 +276,6 @@ def _transport_security() -> TransportSecuritySettings:
     ).strip()
 
     if raw_hosts:
-
         hosts = [
             h.strip()
             for h in raw_hosts.split(",")
